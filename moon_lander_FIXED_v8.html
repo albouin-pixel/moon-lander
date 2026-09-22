@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Moon Lander - Fixed</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#05060c;color:#fff;font-family:"Courier New",Courier,monospace}
+canvas{display:block}
+#game{width:100vw;height:100vh}
+#ui{position:fixed;top:14px;left:18px;right:18px;display:flex;justify-content:space-between;pointer-events:none;font-weight:bold;text-shadow:0 2px 5px #000;z-index:5}
+#stats{text-align:right;line-height:1.45}
+#pauseBtn{position:fixed;top:14px;left:18px;z-index:10;padding:8px 16px;border:2px solid #777;border-radius:7px;background:#10131b;color:#fff;font:700 16px "Courier New",Courier,monospace;cursor:pointer}
+#pauseOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);align-items:center;justify-content:center;flex-direction:column;text-align:center;z-index:25}
+#pauseOverlay h1{font-size:52px;margin:0 0 18px}
+.pauseActions{display:flex;gap:14px}
+.pauseActions button{font-family:"Courier New",Courier,monospace;font-weight:bold}
+#miniBox{position:fixed;bottom:70px;left:18px;width:260px;height:145px;background:rgba(5,7,13,.9);border:2px solid #777;border-radius:10px;overflow:hidden;z-index:6}
+#mini{width:260px;height:145px}
+#miniTitle{position:absolute;top:5px;left:9px;font-size:11px;font-weight:bold;opacity:.8;z-index:2}
+#controls{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);opacity:.75;white-space:nowrap;text-shadow:0 2px 5px #000;z-index:5;pointer-events:none}
+#message{display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);align-items:center;justify-content:center;flex-direction:column;text-align:center;z-index:20}
+#message h1{font-size:52px;margin:0 0 12px}
+#message p{font-size:19px}
+button{padding:12px 24px;border:0;border-radius:9px;font-size:18px;cursor:pointer}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<button id="pauseBtn" type="button">PAUSE</button>
+<div id="pauseOverlay">
+  <h1>PAUSED</h1>
+  <div class="pauseActions">
+    <button id="resumeBtn" type="button">RESUME</button>
+    <button id="pauseRestartBtn" type="button">RESTART</button>
+  </div>
+</div>
+
+<div id="ui">
+  <div>MOON LANDER</div>
+  <div id="stats"></div>
+</div>
+
+<div id="miniBox">
+  <div id="miniTitle">MOON MAP</div>
+  <canvas id="mini" width="520" height="290"></canvas>
+</div>
+
+<div id="controls">W / S = THROTTLE &nbsp;&nbsp; ↑ = ENGINE &nbsp;&nbsp; ← → = ROTATE &nbsp;&nbsp; R = RESTART</div>
+
+<div id="message">
+  <h1 id="result"></h1>
+  <p id="resultInfo"></p>
+  <button onclick="resetGame()">LAND AGAIN</button>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- CANVAS ---------- */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const mini = document.getElementById("mini");
+const mctx = mini.getContext("2d");
+
+let W = 1, H = 1, dpr = 1;
+
+/* ---------- WORLD ---------- */
+const GRAVITY = 38;
+const MAX_THRUST = 145;
+const ROTATION_SPEED = 2.7;
+const THROTTLE_SPEED = 60;
+const FUEL_START = 250;
+
+let MAP_WIDTH = 10000;
+let terrain = [];
+let stars = [];
+let landingPad = null;
+let lander = null;
+
+let fuel = FUEL_START;
+let throttle = 100;       // starts at 100%
+let gameState = "playing"; // engine is NOT ignited
+let paused = false;
+let cameraX = 0;
+let cameraY = 0;
+let groundBase = 0;
+
+/* ---------- INPUT ---------- */
+const keys = Object.create(null);
+
+window.addEventListener("keydown", e => {
+  const k = e.key;
+  keys[k] = true;
+
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(k)) {
+    e.preventDefault();
+  }
+
+  if (k.toLowerCase() === "r") resetGame();
+  if (k === "Escape" && gameState === "playing") togglePause();
+});
+
+window.addEventListener("keyup", e => {
+  keys[e.key] = false;
+});
+
+/* ---------- UTILITIES ---------- */
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function smoothstep(t){ t=clamp(t,0,1); return t*t*(3-2*t); }
+
+function groundHeight(x){
+  if (!terrain || !terrain.values || !terrain.values.length) return groundBase;
+  x = clamp(x,0,MAP_WIDTH);
+
+  const step = terrain.step;
+  const p = x / step;
+  const i = Math.floor(p);
+  const t = p-i;
+
+  if (i >= terrain.values.length-1) return terrain.values[terrain.values.length-1];
+  return lerp(terrain.values[i],terrain.values[i+1],smoothstep(t));
+}
+
+/* ---------- TERRAIN ---------- */
+function makeTerrain(){
+  const step = 70;
+  const count = Math.ceil(MAP_WIDTH/step)+1;
+  const values = [];
+
+  // New random terrain profile every time makeTerrain() is called.
+  groundBase = 700;
+  const p1=Math.random()*Math.PI*2;
+  const p2=Math.random()*Math.PI*2;
+  const p3=Math.random()*Math.PI*2;
+  const p4=Math.random()*Math.PI*2;
+  const p5=Math.random()*Math.PI*2;
+  const p6=Math.random()*Math.PI*2;
+  const a1=220+Math.random()*90;
+  const a2=130+Math.random()*90;
+  const a3=70+Math.random()*60;
+
+  for(let i=0;i<count;i++){
+    const x=i*step;
+    const mountains =
+      Math.sin(x*0.00052+p1)*a1 +
+      Math.sin(x*0.00093+p2)*a2 +
+      Math.sin(x*0.00165+p3)*a3;
+    const hills =
+      Math.sin(x*0.0037+p4)*(35+Math.random()*20) +
+      Math.sin(x*0.0068+p5)*(18+Math.random()*15);
+    const noise=(Math.random()-.5)*20;
+    values.push(clamp(groundBase+mountains+hills+noise,180,1180));
+  }
+
+  for(let pass=0;pass<2;pass++){
+    const copy=values.slice();
+    for(let i=1;i<values.length-1;i++){
+      values[i]=(copy[i-1]+copy[i]*2+copy[i+1])/4;
+    }
+  }
+  terrain={step,values};
+}
+
+/* Make the pad genuinely flat, then smoothly blend into the terrain. */
+function makeLandingPad(){
+  const width = 190;
+  const half = width/2;
+  const transition = 230;
+
+  const minX = 700;
+  const maxX = MAP_WIDTH-700;
+  const center = minX + Math.random()*(maxX-minX);
+
+  const padY = groundHeight(center);
+
+  // Flatten the whole pad and create smooth ramps outside it.
+  for(let i=0;i<terrain.values.length;i++){
+    const x=i*terrain.step;
+    const d=Math.abs(x-center);
+
+    if(d <= half){
+      terrain.values[i]=padY;
+    }else if(d < half+transition){
+      const t=(d-half)/transition;
+      const s=smoothstep(t);
+      const original=terrain.values[i];
+      terrain.values[i]=lerp(padY,original,s);
+    }
+  }
+
+  landingPad={center,width,half,y:groundHeight(center)};
+}
+
+/* ---------- STARS ---------- */
+function makeStars(){
+  stars=[];
+  for(let i=0;i<420;i++){
+    stars.push({
+      x:Math.random()*MAP_WIDTH,
+      y:Math.random()*Math.max(H*4,3000)-900,
+      r:.3+Math.random()*1.5,
+      a:.25+Math.random()*.75
+    });
+  }
+}
+
+/* ---------- SPAWN ---------- */
+function randomSpawnX(){
+  // Spawn well away from the pad.
+  for(let tries=0;tries<100;tries++){
+    const x=350+Math.random()*(MAP_WIDTH-700);
+    if(Math.abs(x-landingPad.center)>900) return x;
+  }
+  return landingPad.center>MAP_WIDTH/2 ? 600 : MAP_WIDTH-600;
+}
+
+function resetGame(){
+  paused=false;
+  document.getElementById("pauseOverlay").style.display="none";
+  document.getElementById("pauseBtn").textContent="PAUSE";
+  // Build a completely new world every restart.
+  makeTerrain();
+  makeLandingPad();
+  makeStars();
+
+  const x=randomSpawnX();
+  const altitude=350+Math.random()*900;
+
+  lander={
+    x,
+    y:groundHeight(x)-altitude,
+    vx:(Math.random()-.5)*10,
+    vy:(Math.random()-.5)*5,
+    angle:(Math.random()-.5)*.12,
+    width:32,
+    height:44
+  };
+
+  fuel=FUEL_START;
+  throttle=100;       // 100% throttle
+  gameState="playing"; // engine OFF until ArrowUp
+
+  cameraX=lander.x-W*.5;
+  cameraY=lander.y-H*.5;
+  clampCamera();
+
+  document.getElementById("message").style.display="none";
+}
+
+/* ---------- RESIZE ---------- */
+function resize(){
+  W=Math.max(1,window.innerWidth);
+  H=Math.max(1,window.innerHeight);
+  dpr=Math.min(window.devicePixelRatio||1,2);
+
+  canvas.width=Math.floor(W*dpr);
+  canvas.height=Math.floor(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  // Do NOT rebuild the game world just because the window changes size.
+  // This prevents broken references and keeps the current terrain/pad.
+  if(!terrain.length){
+    makeTerrain();
+    makeLandingPad();
+    makeStars();
+  }
+}
+window.addEventListener("resize",resize);
+
+/* ---------- DRAW STARS ---------- */
+function drawStars(){
+  for(const s of stars){
+    const x=s.x-cameraX*.08;
+    const y=s.y-cameraY*.08;
+    if(x<-5||x>W+5||y<-5||y>H+5) continue;
+    ctx.globalAlpha=s.a;
+    ctx.fillStyle="#fff";
+    ctx.beginPath();
+    ctx.arc(x,y,s.r,0,Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+/* ---------- DRAW MOON ---------- */
+function drawMoon(){
+  const start=Math.max(0,cameraX-100);
+  const end=Math.min(MAP_WIDTH,cameraX+W+100);
+
+  ctx.fillStyle="#38393f";
+  ctx.beginPath();
+  ctx.moveTo(0,H);
+
+  for(let x=start;x<=end;x+=20){
+    ctx.lineTo(x-cameraX,groundHeight(x)-cameraY);
+  }
+
+  ctx.lineTo(W,H);
+  ctx.closePath();
+  ctx.fill();
+
+  // Surface line
+  ctx.strokeStyle="#707176";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  let first=true;
+  for(let x=start;x<=end;x+=20){
+    const sx=x-cameraX, sy=groundHeight(x)-cameraY;
+    if(first){ctx.moveTo(sx,sy);first=false;}
+    else ctx.lineTo(sx,sy);
+  }
+  ctx.stroke();
+
+  // Simple craters
+  ctx.strokeStyle="#25262b";
+  ctx.lineWidth=3;
+  const firstC=Math.floor(start/210)-1;
+  const lastC=Math.ceil(end/210)+1;
+
+  for(let i=firstC;i<=lastC;i++){
+    const x=i*210+75;
+    if(x<0||x>MAP_WIDTH) continue;
+    const y=groundHeight(x)+24-cameraY;
+    ctx.beginPath();
+    ctx.ellipse(x-cameraX,y,24+(i%3)*6,7,0,0,Math.PI*2);
+    ctx.stroke();
+  }
+}
+
+/* ---------- DRAW PAD ---------- */
+function drawLandingPad(){
+  if(!landingPad)return;
+
+  const left=landingPad.center-landingPad.half;
+  const x=left-cameraX;
+  const y=landingPad.y-cameraY;
+
+  if(x>W+250||x+landingPad.width<-250)return;
+
+  ctx.strokeStyle="#8d9197";
+  ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo(x+22,y+8);
+  ctx.lineTo(x+32,y+30);
+  ctx.moveTo(x+landingPad.width-22,y+8);
+  ctx.lineTo(x+landingPad.width-32,y+30);
+  ctx.stroke();
+
+  ctx.fillStyle="#c8ccd1";
+  ctx.fillRect(x,y,landingPad.width,10);
+
+  ctx.strokeStyle="#55585d";
+  ctx.lineWidth=2;
+  ctx.strokeRect(x,y,landingPad.width,10);
+
+  ctx.font="bold 14px 'Courier New',Courier,monospace";
+  ctx.fillStyle="#55585d";
+  ctx.textAlign="center";
+  ctx.fillText("LAND",x+landingPad.width/2,y-8);
+}
+
+/* ---------- LANDER ---------- */
+function drawLander(){
+  if(!lander)return;
+
+  const x=lander.x-cameraX;
+  const y=lander.y-cameraY;
+
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(lander.angle);
+
+  // Blue engine flame. It is visual only when ArrowUp is held.
+  const engineOn=keys["ArrowUp"] && fuel>0 && throttle>0 && gameState==="playing";
+
+  if(engineOn){
+    const len=20+throttle*.40+Math.random()*7;
+    const w=4+throttle*.07;
+
+    ctx.shadowBlur=14;
+    ctx.shadowColor="#45bfff";
+
+    ctx.fillStyle="#188cff";
+    ctx.beginPath();
+    ctx.moveTo(-w,18);
+    ctx.lineTo(0,18+len);
+    ctx.lineTo(w,18);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle="#dff8ff";
+    ctx.beginPath();
+    ctx.moveTo(-w*.42,18);
+    ctx.lineTo(0,18+len*.62);
+    ctx.lineTo(w*.42,18);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.shadowBlur=0;
+  }
+
+  // Compact 2D lander: only two landing legs are visible.
+  ctx.fillStyle="#dce0e5";
+  ctx.strokeStyle="#656970";
+  ctx.lineWidth=2;
+
+  ctx.beginPath();
+  ctx.moveTo(-16,17);
+  ctx.lineTo(-11,-13);
+  ctx.lineTo(11,-13);
+  ctx.lineTo(16,17);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle="#c9cdd2";
+  ctx.fillRect(-10,-19,20,7);
+
+  ctx.fillStyle="#70abc5";
+  ctx.fillRect(-6,-17,12,5);
+
+  ctx.strokeStyle="#a4a8ad";
+  ctx.lineWidth=3;
+  // Left leg
+  ctx.beginPath();
+  ctx.moveTo(-13,9);ctx.lineTo(-27,25);ctx.lineTo(-10,25);
+  ctx.stroke();
+  // Right leg
+  ctx.beginPath();
+  ctx.moveTo(13,9);ctx.lineTo(27,25);ctx.lineTo(10,25);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ---------- PHYSICS / COLLISION ---------- */
+function feetWorld(){
+  // Two outer feet are enough for the landing check.
+  const localFeet=[
+    {x:-27,y:25},
+    {x:27,y:25}
+  ];
+
+  return localFeet.map(p=>{
+    const c=Math.cos(lander.angle),s=Math.sin(lander.angle);
+    return {
+      x:lander.x+p.x*c-p.y*s,
+      y:lander.y+p.x*s+p.y*c
+    };
+  });
+}
+
+function updateThrottle(dt){
+  if(keys["w"]||keys["W"]) throttle+=THROTTLE_SPEED*dt;
+  if(keys["s"]||keys["S"]) throttle-=THROTTLE_SPEED*dt;
+  throttle=clamp(throttle,0,100);
+}
+
+function crash(text){
+  if(gameState!=="playing")return;
+  gameState="crashed";
+  showResult("CRASH!",text);
+}
+
+function land(){
+  if(gameState!=="playing")return;
+  gameState="landed";
+  showResult("SOFT LANDING!","You landed safely on the Moon.");
+}
+
+function updatePhysics(dt){
+  if(gameState!=="playing" || paused)return;
+
+  if(keys["ArrowLeft"]) lander.angle-=ROTATION_SPEED*dt;
+  if(keys["ArrowRight"]) lander.angle+=ROTATION_SPEED*dt;
+
+  lander.vy+=GRAVITY*dt;
+
+  const engineOn=keys["ArrowUp"] && fuel>0 && throttle>0;
+
+  if(engineOn){
+    const thrust=MAX_THRUST*throttle/100;
+    lander.vx+=Math.sin(lander.angle)*thrust*dt;
+    lander.vy-=Math.cos(lander.angle)*thrust*dt;
+    fuel=Math.max(0,fuel-16*(throttle/100)*dt);
+  }
+
+  lander.x+=lander.vx*dt;
+  lander.y+=lander.vy*dt;
+
+  if(lander.x<40){lander.x=40;lander.vx*= -.25}
+  if(lander.x>MAP_WIDTH-40){lander.x=MAP_WIDTH-40;lander.vx*= -.25}
+
+  const feet=feetWorld();
+  const lowestFoot=Math.max(feet[0].y,feet[1].y);
+  const terrainAtFeet=Math.min(
+    groundHeight(feet[0].x),
+    groundHeight(feet[1].x)
+  );
+
+  if(lowestFoot>=terrainAtFeet){
+    const left=landingPad.center-landingPad.half;
+    const right=landingPad.center+landingPad.half;
+
+    const bothFeetOnPad=feet.every(f=>f.x>=left && f.x<=right);
+    const safeV=Math.abs(lander.vy)<45;
+    const safeH=Math.abs(lander.vx)<38;
+    const safeA=Math.abs(lander.angle)<0.25;
+
+    if(bothFeetOnPad && safeV && safeH && safeA){
+      land();
+    }else if(bothFeetOnPad){
+      crash("You reached the pad, but the landing was too hard or tilted.");
+    }else{
+      crash("You missed the landing pad.");
+    }
+  }
+}
+
+/* ---------- CAMERA ---------- */
+function clampCamera(){
+  cameraX=clamp(cameraX,0,Math.max(0,MAP_WIDTH-W));
+
+  // Allow the camera to follow the lander upward,
+  // but don't let it move below the Moon.
+  const maxDown=groundBase-H*.25;
+  cameraY=Math.min(cameraY,maxDown);
+}
+
+function updateCamera(){
+  if(!lander)return;
+
+  const targetX=lander.x-W*.5;
+  const targetY=lander.y-H*.5;
+
+  cameraX+= (targetX-cameraX)*.10;
+  cameraY+= (targetY-cameraY)*.10;
+  clampCamera();
+}
+
+/* ---------- MINIMAP ---------- */
+function drawMiniMap(){
+  const mw=520,mh=290;
+  mctx.clearRect(0,0,mw,mh);
+  mctx.fillStyle="#090b12";
+  mctx.fillRect(0,0,mw,mh);
+
+  const l=20,r=mw-20,t=35,b=mh-20;
+  const mapW=r-l,mapH=b-t;
+
+  // Draw the actual random terrain profile, normalized to its real min/max.
+  let minY=Infinity,maxY=-Infinity;
+  for(const v of terrain.values){ minY=Math.min(minY,v); maxY=Math.max(maxY,v); }
+  const range=Math.max(1,maxY-minY);
+
+  mctx.fillStyle="#45464c";
+  mctx.beginPath();
+  mctx.moveTo(l,b);
+  for(let i=0;i<terrain.values.length;i++){
+    const sx=l+(i/(terrain.values.length-1))*mapW;
+    const normalized=(terrain.values[i]-minY)/range;
+    const sy=t+18+normalized*(mapH-25);
+    mctx.lineTo(sx,sy);
+  }
+  mctx.lineTo(r,b);
+  mctx.closePath();
+  mctx.fill();
+
+  // Surface outline makes mountains and valleys easy to see.
+  mctx.strokeStyle="#9da1a8";
+  mctx.lineWidth=2;
+  mctx.beginPath();
+  for(let i=0;i<terrain.values.length;i++){
+    const sx=l+(i/(terrain.values.length-1))*mapW;
+    const normalized=(terrain.values[i]-minY)/range;
+    const sy=t+18+normalized*(mapH-25);
+    if(i===0) mctx.moveTo(sx,sy); else mctx.lineTo(sx,sy);
+  }
+  mctx.stroke();
+
+  // Pad, using its real terrain height.
+  const px=l+(landingPad.center/MAP_WIDTH)*mapW;
+  const padNorm=(landingPad.y-minY)/range;
+  const py=t+18+padNorm*(mapH-25);
+  mctx.fillStyle="#fff";
+  mctx.fillRect(px-10,py-4,20,5);
+  mctx.font="bold 16px 'Courier New',Courier,monospace";
+  mctx.textAlign="center";
+  mctx.fillText("LAND",px,py-10);
+
+  // Player position follows the actual random terrain profile.
+  const playerX=l+(lander.x/MAP_WIDTH)*mapW;
+  const groundNorm=(groundHeight(lander.x)-minY)/range;
+  const groundMiniY=t+18+groundNorm*(mapH-25);
+  const alt=Math.max(0,groundHeight(lander.x)-lander.y);
+  const playerY=clamp(groundMiniY-Math.min(alt/8,mapH*.45),t+8,b-5);
+
+  mctx.fillStyle="#55cfff";
+  mctx.beginPath();
+  mctx.moveTo(playerX,playerY-9);
+  mctx.lineTo(playerX-7,playerY+6);
+  mctx.lineTo(playerX+7,playerY+6);
+  mctx.closePath();
+  mctx.fill();
+
+  // Camera view box.
+  const vx=l+(cameraX/MAP_WIDTH)*mapW;
+  const vw=Math.max(18,(W/MAP_WIDTH)*mapW);
+  mctx.strokeStyle="#55cfff";
+  mctx.lineWidth=1;
+  mctx.strokeRect(clamp(vx,l,r-vw),t+2,Math.min(vw,mapW),mapH-2);
+}
+
+/* ---------- UI ---------- */
+function showResult(title,text){
+  document.getElementById("result").textContent=title;
+  document.getElementById("resultInfo").textContent=text;
+  document.getElementById("message").style.display="flex";
+}
+
+function updateUI(){
+  const alt=Math.max(0,groundHeight(lander.x)-lander.y);
+  document.getElementById("stats").innerHTML=
+    `FUEL ${Math.round(fuel)}<br>`+
+    `THROTTLE ${Math.round(throttle)}%<br>`+
+    `Vx ${Math.round(lander.vx)} &nbsp; Vy ${Math.round(lander.vy)}<br>`+
+    `ALT ${Math.round(alt)}<br>`+
+    `MAP ${Math.round(lander.x/MAP_WIDTH*100)}%`;
+}
+
+/* ---------- LOOP ---------- */
+let last=performance.now();
+
+function loop(now){
+  const dt=Math.min((now-last)/1000,.035);
+  last=now;
+
+  updateThrottle(dt);
+  updatePhysics(dt);
+  updateCamera();
+
+  ctx.clearRect(0,0,W,H);
+  drawStars();
+  drawMoon();
+  drawLandingPad();
+  drawLander();
+  drawMiniMap();
+  updateUI();
+
+  requestAnimationFrame(loop);
+}
+
+
+function togglePause(){
+  if(gameState!=="playing") return;
+  paused=!paused;
+  document.getElementById("pauseOverlay").style.display=paused?"flex":"none";
+  document.getElementById("pauseBtn").textContent=paused?"RESUME":"PAUSE";
+}
+
+document.getElementById("pauseBtn").addEventListener("click", togglePause);
+document.getElementById("resumeBtn").addEventListener("click", togglePause);
+document.getElementById("pauseRestartBtn").addEventListener("click", resetGame);
+
+/* ---------- START ---------- */
+resize();
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
