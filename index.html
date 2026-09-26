@@ -50,6 +50,66 @@ canvas{
   line-height:1.45;
 }
 
+#fuelBarWrap{
+  width:180px;
+  height:12px;
+  margin-top:5px;
+  border:1px solid #888;
+  background:#11151d;
+  border-radius:3px;
+  overflow:hidden;
+}
+
+#fuelBar{
+  width:100%;
+  height:100%;
+  background:#62d66f;
+  transition:width .12s linear, background .12s linear;
+}
+
+#padFinder{
+  position:fixed;
+  left:50%;
+  top:68px;
+  transform:translateX(-50%);
+  z-index:7;
+  padding:5px 12px;
+  border:1px solid #777;
+  border-radius:6px;
+  background:rgba(5,7,13,.82);
+  font-weight:bold;
+  font-size:14px;
+  letter-spacing:1px;
+  text-shadow:0 2px 5px #000;
+  pointer-events:none;
+}
+
+#altWarning{
+  position:fixed;
+  left:50%;
+  bottom:58px;
+  transform:translateX(-50%);
+  z-index:8;
+  padding:5px 10px;
+  border:1px solid #777;
+  border-radius:5px;
+  background:rgba(5,7,13,.84);
+  font-weight:bold;
+  opacity:0;
+  pointer-events:none;
+}
+
+#scorePopup{
+  position:fixed;
+  left:50%;
+  top:120px;
+  transform:translateX(-50%);
+  z-index:8;
+  font-weight:bold;
+  opacity:.8;
+  pointer-events:none;
+}
+
 /* =========================
    PAUSE BUTTON
 ========================= */
@@ -358,9 +418,12 @@ button:hover{
     <div id="modeLabel"></div>
   </div>
 
-  <div id="stats"></div>
+  <div id="stats"><div id="fuelBarWrap"><div id="fuelBar"></div></div></div>
 
 </div>
+
+<div id="padFinder"></div>
+<div id="altWarning">ALTITUDE LOW</div>
 
 <!-- =========================
      MINIMAP
@@ -452,6 +515,14 @@ let cameraX = 0;
 let cameraY = 0;
 
 let groundBase = 700;
+let moonType = "STANDARD";
+let moonPalette = {sky:"#05060c", ground:"#85888d", groundDark:"#5d6065", crater:"#666a70"};
+let craters = [];
+let dustParticles = [];
+let landerDamage = 0;
+let landingScore = 0;
+let engineSound = null;
+let engineGain = null;
 
 
 /* =========================================================
@@ -591,80 +662,82 @@ function groundHeight(x){
 function makeTerrain(){
 
   const step=70;
-
-  const count=
-    Math.ceil(MAP_WIDTH/step)+1;
-
+  const count=Math.ceil(MAP_WIDTH/step)+1;
   const values=[];
 
-  groundBase=700;
+  const types=[
+    {name:"MARE",base:700,m1:180,m2:95,m3:55},
+    {name:"HIGHLANDS",base:650,m1:280,m2:145,m3:80},
+    {name:"CRATER FIELD",base:720,m1:150,m2:80,m3:45},
+    {name:"MOUNTAIN RIDGE",base:650,m1:330,m2:170,m3:95}
+  ];
+  const type=types[Math.floor(Math.random()*types.length)];
+  moonType=type.name;
+  groundBase=type.base;
 
-  const p1=Math.random()*Math.PI*2;
-  const p2=Math.random()*Math.PI*2;
-  const p3=Math.random()*Math.PI*2;
-  const p4=Math.random()*Math.PI*2;
-  const p5=Math.random()*Math.PI*2;
+  moonPalette = type.name==="MARE"
+    ? {sky:"#05060c",ground:"#85888d",groundDark:"#5d6065",crater:"#666a70"}
+    : type.name==="HIGHLANDS"
+    ? {sky:"#08070b",ground:"#a09a8e",groundDark:"#6d675d",crater:"#777066"}
+    : type.name==="CRATER FIELD"
+    ? {sky:"#06070b",ground:"#888b91",groundDark:"#5f6268",crater:"#555960"}
+    : {sky:"#07060b",ground:"#97929a",groundDark:"#625e66",crater:"#69636d"};
 
-  const a1=220+Math.random()*90;
-  const a2=130+Math.random()*90;
-  const a3=70+Math.random()*60;
+  const p1=Math.random()*Math.PI*2,p2=Math.random()*Math.PI*2,p3=Math.random()*Math.PI*2;
+  const p4=Math.random()*Math.PI*2,p5=Math.random()*Math.PI*2;
 
   for(let i=0;i<count;i++){
-
     const x=i*step;
-
-    const mountains =
-      Math.sin(x*.00052+p1)*a1 +
-      Math.sin(x*.00093+p2)*a2 +
-      Math.sin(x*.00165+p3)*a3;
-
-    const hills =
-      Math.sin(x*.0037+p4)*
-      (35+Math.random()*20) +
-
-      Math.sin(x*.0068+p5)*
-      (18+Math.random()*15);
-
-    const noise=
-      (Math.random()-.5)*20;
-
-    values.push(
-      clamp(
-        groundBase+
-        mountains+
-        hills+
-        noise,
-        180,
-        1180
-      )
-    );
+    const mountains=Math.sin(x*.00052+p1)*type.m1+Math.sin(x*.00093+p2)*type.m2+Math.sin(x*.00165+p3)*type.m3;
+    const hills=Math.sin(x*.0037+p4)*(35+Math.random()*20)+Math.sin(x*.0068+p5)*(18+Math.random()*15);
+    const noise=(Math.random()-.5)*20;
+    values.push(clamp(groundBase+mountains+hills+noise,180,1180));
   }
 
-  /* Smooth terrain */
-
-  for(let pass=0;pass<2;pass++){
-
-    const copy=values.slice();
-
-    for(
-      let i=1;
-      i<values.length-1;
-      i++
-    ){
-
-      values[i]=
-        (
-          copy[i-1]+
-          copy[i]*2+
-          copy[i+1]
-        )/4;
+  /* Add broad crater depressions for a more lunar surface. */
+  craters=[];
+  const craterCount=12+Math.floor(Math.random()*10);
+  for(let c=0;c<craterCount;c++){
+    const cx=250+Math.random()*(MAP_WIDTH-500);
+    const radius=70+Math.random()*180;
+    const depth=15+Math.random()*55;
+    craters.push({x:cx,r:radius,depth});
+    for(let i=1;i<values.length-1;i++){
+      const x=i*step,d=Math.abs(x-cx);
+      if(d<radius){
+        const t=1-d/radius;
+        values[i]-=depth*t*t;
+      }
     }
   }
 
-  terrain={
-    step,
-    values
-  };
+  for(let pass=0;pass<2;pass++){
+    const copy=values.slice();
+    for(let i=1;i<values.length-1;i++) values[i]=(copy[i-1]+copy[i]*2+copy[i+1])/4;
+  }
+  terrain={step,values};
+}
+
+
+/* Moon dust particles */
+function spawnDust(x,y,count=8){
+  for(let i=0;i<count;i++){
+    dustParticles.push({x,y,vx:(Math.random()-.5)*70,vy:-20-Math.random()*55,life:.35+Math.random()*.45,r:1+Math.random()*2});
+  }
+}
+
+function updateDust(dt){
+  for(const p of dustParticles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=45*dt;p.life-=dt;}
+  dustParticles=dustParticles.filter(p=>p.life>0);
+}
+
+function drawDust(){
+  for(const p of dustParticles){
+    ctx.globalAlpha=clamp(p.life*1.8,0,1);
+    ctx.fillStyle="#c4c4c4";
+    ctx.beginPath();ctx.arc(p.x-cameraX,p.y-cameraY,p.r,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
 }
 
 
@@ -855,6 +928,9 @@ function resetGame(){
 
 
   fuel=getConfig().fuel;
+  landerDamage=0;
+  landingScore=0;
+  dustParticles=[];
 
   throttle=100;
 
@@ -925,7 +1001,14 @@ function updateVisibility(){
     "miniBox"
   ).style.display=
     miniVisible ? "block" : "none";
+
+  document.getElementById("padFinder").style.display=
+    playing && difficulty==="hard" ? "block" : "none";
+
+  document.getElementById("fuelBarWrap").style.display=
+    playing ? "block" : "none";
 }
+
 
 
 /* =========================================================
@@ -935,6 +1018,7 @@ function updateVisibility(){
 function startGame(mode){
 
   difficulty=mode;
+  initEngineSound();
 
   document.getElementById(
     "mainMenu"
@@ -1061,6 +1145,8 @@ function drawStars(){
 
 function drawMoon(){
 
+  /* Background and lunar surface use the randomly selected moon environment. */
+
   const start=
     Math.max(
       0,
@@ -1074,7 +1160,7 @@ function drawMoon(){
     );
 
 
-  ctx.fillStyle="#38393f";
+  ctx.fillStyle=moonPalette.ground;
 
   ctx.beginPath();
 
@@ -1103,7 +1189,7 @@ function drawMoon(){
 
   /* Surface */
 
-  ctx.strokeStyle="#707176";
+  ctx.strokeStyle=moonPalette.groundDark;
 
   ctx.lineWidth=2;
 
@@ -1141,7 +1227,7 @@ function drawMoon(){
 
   /* Craters */
 
-  ctx.strokeStyle="#25262b";
+  ctx.strokeStyle=moonPalette.crater;
 
   ctx.lineWidth=3;
 
@@ -1187,6 +1273,19 @@ function drawMoon(){
 
     ctx.stroke();
   }
+
+  /* Surface craters visible in the current camera view. */
+  for(const c of craters){
+    const x=c.x-cameraX;
+    const y=groundHeight(c.x)-cameraY+3;
+    if(x<-c.r-80||x>W+c.r+80) continue;
+    ctx.strokeStyle=moonPalette.crater;
+    ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.ellipse(x,y,c.r*.55,Math.max(8,c.r*.10),0,0,Math.PI*2);
+    ctx.stroke();
+  }
+
 }
 
 
@@ -1293,162 +1392,30 @@ function drawLandingPad(){
 ========================================================= */
 
 function drawLander(){
-
   if(!lander)return;
-
-  const x=
-    lander.x-cameraX;
-
-  const y=
-    lander.y-cameraY;
-
-
-  ctx.save();
-
-  ctx.translate(x,y);
-
-  ctx.rotate(lander.angle);
-
-
-  const engineOn=
-    keys["ArrowUp"] &&
-    fuel>0 &&
-    throttle>0 &&
-    gameState==="playing";
-
-
+  const x=lander.x-cameraX,y=lander.y-cameraY;
+  ctx.save();ctx.translate(x,y);ctx.rotate(lander.angle);
+  const engineOn=keys["ArrowUp"]&&fuel>0&&throttle>0&&gameState==="playing";
   if(engineOn){
-
-    const len=
-      20+
-      throttle*.40+
-      Math.random()*7;
-
-    const w=
-      4+
-      throttle*.07;
-
-
-    ctx.shadowBlur=14;
-
-    ctx.shadowColor="#45bfff";
-
-    ctx.fillStyle="#188cff";
-
-    ctx.beginPath();
-
-    ctx.moveTo(-w,18);
-
-    ctx.lineTo(
-      0,
-      18+len
-    );
-
-    ctx.lineTo(w,18);
-
-    ctx.closePath();
-
-    ctx.fill();
-
-
-    ctx.fillStyle="#dff8ff";
-
-    ctx.beginPath();
-
-    ctx.moveTo(
-      -w*.42,
-      18
-    );
-
-    ctx.lineTo(
-      0,
-      18+len*.62
-    );
-
-    ctx.lineTo(
-      w*.42,
-      18
-    );
-
-    ctx.closePath();
-
-    ctx.fill();
-
-    ctx.shadowBlur=0;
+    const len=20+throttle*.40+Math.random()*7;
+    const w=4+throttle*.07;
+    ctx.shadowBlur=14;ctx.shadowColor="#45bfff";ctx.fillStyle="#188cff";
+    ctx.beginPath();ctx.moveTo(-w,18);ctx.lineTo(0,18+len);ctx.lineTo(w,18);ctx.closePath();ctx.fill();
+    ctx.fillStyle="#dff8ff";ctx.beginPath();ctx.moveTo(-w*.42,18);ctx.lineTo(0,18+len*.62);ctx.lineTo(w*.42,18);ctx.closePath();ctx.fill();ctx.shadowBlur=0;
   }
-
-
-  ctx.fillStyle="#dce0e5";
-
-  ctx.strokeStyle="#656970";
-
-  ctx.lineWidth=2;
-
-
-  ctx.beginPath();
-
-  ctx.moveTo(-16,17);
-
-  ctx.lineTo(-11,-13);
-
-  ctx.lineTo(11,-13);
-
-  ctx.lineTo(16,17);
-
-  ctx.closePath();
-
-  ctx.fill();
-
-  ctx.stroke();
-
-
-  ctx.fillStyle="#c9cdd2";
-
-  ctx.fillRect(
-    -10,
-    -19,
-    20,
-    7
-  );
-
-
-  ctx.fillStyle="#70abc5";
-
-  ctx.fillRect(
-    -6,
-    -17,
-    12,
-    5
-  );
-
-
-  ctx.strokeStyle="#a4a8ad";
-
-  ctx.lineWidth=3;
-
-
-  ctx.beginPath();
-
-  ctx.moveTo(-13,9);
-
-  ctx.lineTo(-27,25);
-
-  ctx.lineTo(-10,25);
-
-  ctx.stroke();
-
-
-  ctx.beginPath();
-
-  ctx.moveTo(13,9);
-
-  ctx.lineTo(27,25);
-
-  ctx.lineTo(10,25);
-
-  ctx.stroke();
-
-
+  ctx.fillStyle="#dce0e5";ctx.strokeStyle="#656970";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(-16,17);ctx.lineTo(-11,-13);ctx.lineTo(11,-13);ctx.lineTo(16,17);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.fillStyle="#c9cdd2";ctx.fillRect(-10,-19,20,7);
+  ctx.fillStyle="#70abc5";ctx.fillRect(-6,-17,12,12);
+  ctx.strokeStyle="#a4a8ad";ctx.lineWidth=3;
+  ctx.beginPath();ctx.moveTo(-13,9);ctx.lineTo(-27,25);ctx.lineTo(-10,25);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(13,9);ctx.lineTo(27,25);ctx.lineTo(10,25);ctx.stroke();
+  /* Small damage marks appear after hard impacts. */
+  if(landerDamage>0){
+    ctx.strokeStyle="#34373b";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(-9,-4);ctx.lineTo(-3,2);ctx.lineTo(-8,8);ctx.stroke();
+    if(landerDamage>1){ctx.beginPath();ctx.moveTo(7,-8);ctx.lineTo(3,-1);ctx.lineTo(9,5);ctx.stroke();}
+  }
   ctx.restore();
 }
 
@@ -1516,6 +1483,29 @@ function updateThrottle(dt){
 
 
 /* =========================================================
+   ENGINE AUDIO
+========================================================= */
+function updateEngineSound(engineOn){
+  if(!engineSound)return;
+  if(engineOn){
+    if(engineSound.state==="suspended") engineSound.resume();
+    engineGain.gain.setTargetAtTime(0.018+throttle*.00035,engineSound.currentTime,.04);
+  }else if(engineGain){
+    engineGain.gain.setTargetAtTime(0,engineSound.currentTime,.08);
+  }
+}
+
+function initEngineSound(){
+  if(engineSound)return;
+  try{
+    engineSound=new (window.AudioContext||window.webkitAudioContext)();
+    const osc=engineSound.createOscillator();engineGain=engineSound.createGain();
+    osc.type="sawtooth";osc.frequency.value=68;engineGain.gain.value=0;
+    osc.connect(engineGain);engineGain.connect(engineSound.destination);osc.start();
+  }catch(e){}
+}
+
+/* =========================================================
    PHYSICS
 ========================================================= */
 
@@ -1541,10 +1531,14 @@ function land(){
   }
 
   gameState="landed";
-
+  const fuelBonus=Math.round(fuel*4);
+  const speedPenalty=Math.round(Math.abs(lander.vy)*2+Math.abs(lander.vx));
+  landingScore=Math.max(0,1000+fuelBonus-speedPenalty);
   showResult(
     "SOFT LANDING!",
-    "You landed safely on the Moon."
+    difficulty==="easy"
+      ? `You landed safely. SCORE: ${landingScore} • FUEL BONUS: ${fuelBonus}`
+      : "You landed safely on the Moon."
   );
 }
 
@@ -1590,6 +1584,7 @@ function updatePhysics(dt){
     fuel>0 &&
     throttle>0;
 
+  updateEngineSound(engineOn);
 
   if(engineOn){
 
@@ -1660,6 +1655,11 @@ function updatePhysics(dt){
     lander.vx*=-.25;
   }
 
+
+  /* Engine exhaust kicks up dust near the surface. */
+  if(engineOn && Math.abs(lander.vy)>3 && groundHeight(lander.x)-lander.y<150){
+    spawnDust(lander.x,lander.y+28,2);
+  }
 
   /* Collision */
 
@@ -1739,13 +1739,13 @@ function updatePhysics(dt){
     }else if(
       bothFeetOnPad
     ){
-
+      landerDamage=Math.min(2,landerDamage+1);
       crash(
         "You reached the pad, but the landing was too hard or tilted."
       );
 
     }else{
-
+      landerDamage=Math.min(2,landerDamage+1);
       crash(
         "You missed the landing pad."
       );
@@ -2127,36 +2127,35 @@ function showResult(
 ========================================================= */
 
 function updateUI(){
-
   if(!lander)return;
+  const alt=Math.max(0,groundHeight(lander.x)-lander.y);
+  const maxFuel=getConfig().fuel;
+  const pct=clamp(fuel/maxFuel*100,0,100);
+  const bar=document.getElementById("fuelBar");
+  bar.style.width=pct+"%";
+  bar.style.background=pct<=15?"#e04b4b":pct<=30?"#e6b84b":"#62d66f";
 
+  let warning="";
+  if(difficulty==="easy" && pct<=20) warning="LOW FUEL";
+  if(alt<110) warning=warning ? warning+" • LOW ALTITUDE" : "LOW ALTITUDE";
+  const aw=document.getElementById("altWarning");
+  aw.textContent=warning;aw.style.opacity=warning?"1":"0";
 
-  const alt=
-    Math.max(
-      0,
-      groundHeight(
-        lander.x
-      )-
-      lander.y
-    );
-
-
-  document.getElementById(
-    "stats"
-  ).innerHTML=
-
+  document.getElementById("stats").innerHTML=
     `FUEL ${Math.round(fuel)}<br>`+
-
+    `<div id="fuelBarWrap"><div id="fuelBar"></div></div>`+
     `THROTTLE ${Math.round(throttle)}%<br>`+
-
-    `Vx ${Math.round(lander.vx)} &nbsp; `+
-    `Vy ${Math.round(lander.vy)}<br>`+
-
+    `Vx ${Math.round(lander.vx)} &nbsp; Vy ${Math.round(lander.vy)}<br>`+
     `ALT ${Math.round(alt)}<br>`+
+    `MOON ${moonType}<br>`+
+    `MAP ${Math.round(lander.x/MAP_WIDTH*100)}%`;
 
-    `MAP ${Math.round(
-      lander.x/MAP_WIDTH*100
-    )}%`;
+  const pf=document.getElementById("padFinder");
+  if(difficulty==="hard" && landingPad){
+    const delta=landingPad.center-lander.x;
+    const dist=Math.abs(delta);
+    pf.textContent=dist<180 ? "PAD BELOW / NEARBY" : delta<0 ? "← PAD LEFT" : "PAD RIGHT →";
+  }
 }
 
 
@@ -2304,6 +2303,7 @@ function loop(now){
     updateThrottle(dt);
 
     updatePhysics(dt);
+    updateDust(dt);
 
     updateCamera();
 
@@ -2321,6 +2321,7 @@ function loop(now){
     drawMoon();
 
     drawLandingPad();
+    drawDust();
 
     drawLander();
 
